@@ -1,0 +1,10 @@
+{
+  "time_tag_format": "060102150405",
+  "log_path": "./log",
+  "file_name": "test",
+  "max_remain": 5,
+  "rolling_ploicy": 1,
+  "rolling_time_pattern": "0 0 * * * *",
+  "rolling_volume_size": "20M",
+  "compress": true
+}
