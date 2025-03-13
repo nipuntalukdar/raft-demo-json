@@ -1,6 +1,7 @@
 package jsonstore
 
 import (
+	"fmt"
 	"io"
 	"time"
 
@@ -21,11 +22,11 @@ type RaftInterface struct {
 	configuration *raft.Configuration
 	snapshotstore *raft.FileSnapshotStore
 	config        *raft.Config
-	logger        *hclog.Logger
+	logger        hclog.Logger
 }
 
 func NewRaftInterface(configfile, logstorefile, stablestorefile, snapshotstoredir,
-	transport string, serverid string, logger *hclog.Logger, writer io.Writer) (*RaftInterface, error) {
+	transport string, serverid string, logger hclog.Logger, writer io.Writer) (*RaftInterface, error) {
 	configuration, err := BootstrapConfig(configfile)
 	if err != nil {
 		return nil, err
@@ -39,7 +40,7 @@ func NewRaftInterface(configfile, logstorefile, stablestorefile, snapshotstoredi
 	if err != nil {
 		return nil, err
 	}
-	snapshotstore, err := raft.NewFileSnapshotStoreWithLogger(snapshotstoredir, 3, *logger)
+	snapshotstore, err := raft.NewFileSnapshotStoreWithLogger(snapshotstoredir, 3, logger)
 	if err != nil {
 		return nil, err
 	}
@@ -47,6 +48,7 @@ func NewRaftInterface(configfile, logstorefile, stablestorefile, snapshotstoredi
 	conf := raft.DefaultConfig()
 	conf.SnapshotThreshold = 400
 	conf.SnapshotInterval = time.Second * 60
+	conf.Logger = logger
 	conf.LocalID = raft.ServerID(serverid)
 	tcptransport, err := raft.NewTCPTransport(transport, nil, 10, 10*time.Second, writer)
 	err = raft.BootstrapCluster(conf, logstore,
@@ -78,4 +80,16 @@ func NewRaftInterface(configfile, logstorefile, stablestorefile, snapshotstoredi
 
 	return raftin, nil
 
+}
+
+func (raftin *RaftInterface) Leader() string {
+	server := raftin.raftinterface.Leader()
+	raftin.logger.Info("Leader", "Server", server)
+	return string(server)
+}
+
+func (raftin  *RaftInterface) AddKV(key string, value string) error {
+	cmd := fmt.Sprintf("A:%s:%s", key, value)	
+	future := raftin.raftinterface.Apply([]byte(cmd), 30 * time.Second)
+	return future.Error()
 }
