@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/hashicorp/raft"
+	hclog "github.com/hashicorp/go-hclog"
 )
 
 var (
@@ -17,13 +18,14 @@ var (
 )
 
 type Fsm struct {
-	kv   map[string]string
-	lock *sync.Mutex
+	kv     map[string]string
+	lock   *sync.Mutex
+	logger hclog.Logger
 }
 
-func NewFsm() (fsm *Fsm, err error) {
+func NewFsm(logger hclog.Logger) (fsm *Fsm, err error) {
 	kv := make(map[string]string)
-	fsm = &Fsm{kv: kv, lock: &sync.Mutex{}}
+	fsm = &Fsm{kv: kv, lock: &sync.Mutex{}, logger: logger}
 	err = nil
 	return
 }
@@ -49,7 +51,7 @@ func (fsm *Fsm) Apply(log *raft.Log) interface{} {
 		}
 		fsm.add(kvs[2][:len1], kvs[2][len1:])
 	} else if first == "D" {
-		fsm.delete(second)
+		return fsm.delete(second)
 	} else {
 		return ErrIncorrectLog
 	}
@@ -95,6 +97,13 @@ func (fsm *Fsm) Get(key string) (value string, err error) {
 func (fsm *Fsm) delete(key string) (err error) {
 	fsm.lock.Lock()
 	defer fsm.lock.Unlock()
-	delete(fsm.kv, key)
+	_, exists := fsm.kv[key]
+	if exists {
+		fsm.logger.Debug("Delete", "Found Key", key)
+		delete(fsm.kv, key)
+	} else {
+		fsm.logger.Info("Delete", "Key not found", key)
+		err = ErrKeyNotFound
+	}
 	return
 }

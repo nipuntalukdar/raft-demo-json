@@ -55,7 +55,7 @@ func (js *JsonLogStore) LastIndex() (index uint64, err error) {
 	index = 0
 	js.lock.Lock()
 	defer js.lock.Unlock()
-	index, _, ok := js.kv.Min()
+	index, _, ok := js.kv.Max()
 	if !ok {
 		index = 0
 	}

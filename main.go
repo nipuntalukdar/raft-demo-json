@@ -32,9 +32,16 @@ type HttpListenerConfig struct {
 	HttpListeners []HttpListerner
 }
 
+type RequestKeys struct {
+	Keys []string `json:"keys"`
+}
+
 type Response struct {
 	Status  string `json:"status"`
 	Message string `json:"message,omitempty"`
+	DeleteKeys []string `json:"deleted,omitempty"`
+	NotFound  []string `json:"notfound,omitempty"`
+	FoundKeys  map[string]string `json:"found,omitempty"`
 }
 
 type kvStore struct {
@@ -46,6 +53,76 @@ type kvStore struct {
 func newAdKVHandler(rinf *jsonstore.RaftInterface, logger hclog.Logger,
 	httplisteners map[string]string) *kvStore {
 	return &kvStore{rinf: rinf, logger: logger, httplisteners: httplisteners}
+}
+
+func (kv *kvStore) deleteKeys(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		json.NewEncoder(w).Encode(Response{Status: "failed", Message: "Method not allowed"})
+		return
+	}
+
+	var req RequestKeys
+	err := json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(Response{Status: "failed", Message: "Bad request body"})
+		return
+	}
+
+	deletedKeys := []string{}
+	notFoundKeys := []string{}
+	baderr := err
+	for _, key := range req.Keys {
+
+		err = kv.rinf.Delete(key)
+		if err != nil {
+			if err == jsonstore.ErrKeyNotFound {
+				notFoundKeys = append(notFoundKeys, key)
+			} else if err == jsonstore.LeaderDifferent {
+				leaderserver, leaderid := kv.rinf.LeaderWithID()
+				kv.logger.Info("Different leader", "leader", leaderserver)
+				if leaderserver != "" {
+					leaderUrl := fmt.Sprintf("http://%s/delete", kv.httplisteners[leaderid])
+					w.Header().Set("Location", leaderUrl)
+					w.WriteHeader(http.StatusPermanentRedirect)
+
+				} else {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusInternalServerError)
+					json.NewEncoder(w).Encode(Response{Status: "failed", Message: "Leader not found"})
+				}
+				return
+
+			} else {
+				baderr = err
+			}
+		} else {
+			deletedKeys = append(deletedKeys, key)
+		}
+	}
+	response := Response{}
+	if len(notFoundKeys) > 0 {
+		response.NotFound = notFoundKeys
+	}
+
+	if len(deletedKeys) > 0 {
+		response.DeleteKeys = deletedKeys
+		w.WriteHeader(http.StatusOK)
+		response.Status = "success"
+	} else {
+		response.Status = "failed"
+		w.WriteHeader(http.StatusNotFound)
+	}
+	if baderr != nil {
+		response.Status = "failed"
+		w.WriteHeader(http.StatusInternalServerError)
+		response.Message = baderr.Error()
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
 }
 
 func (kv *kvStore) handlePost(w http.ResponseWriter, r *http.Request) {
@@ -62,7 +139,7 @@ func (kv *kvStore) handlePost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	kv.logger.Info("Received documents:")
+	kv.logger.Info("Received keyvals:")
 	for _, doc := range requestData.Data {
 		kv.logger.Debug("Add Data", doc.Key, doc.Value)
 		err := kv.rinf.AddKV(doc.Key, doc.Value)
@@ -75,12 +152,13 @@ func (kv *kvStore) handlePost(w http.ResponseWriter, r *http.Request) {
 				leaderserver, leaderid := kv.rinf.LeaderWithID()
 				kv.logger.Info("Different leader", "leader", leaderserver)
 				if leaderserver != "" {
-					leaderUrl := fmt.Sprintf("http://%s/documents", kv.httplisteners[leaderid])
+					leaderUrl := fmt.Sprintf("http://%s/keyvals", kv.httplisteners[leaderid])
 					w.Header().Set("Location", leaderUrl)
 					w.WriteHeader(http.StatusPermanentRedirect)
 
 				} else {
 					http.Error(w, "Internal Error", http.StatusInternalServerError)
+
 				}
 				return
 			}
@@ -88,6 +166,71 @@ func (kv *kvStore) handlePost(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(Response{Status: "success"})
+}
+
+func (kv *kvStore) testPersist(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	kv.logger.Info("Persisting snapshot")
+	kv.rinf.Persist()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(Response{Status: "success"})
+}
+
+func (kv *kvStore) getKeys(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		json.NewEncoder(w).Encode(Response{Status: "failed", Message: "Method not allowed"})
+		return
+	}
+
+	var req RequestKeys
+	err := json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(Response{Status: "failed", Message: "Bad request body"})
+		return
+	}
+
+	foundkeys := make(map[string]string)
+	notFoundKeys := []string{}
+	baderr := err
+	for _, key := range req.Keys {
+		value, err := kv.rinf.Get(key)
+		if err != nil {
+			if err == jsonstore.ErrKeyNotFound {
+				notFoundKeys = append(notFoundKeys, key)
+			} else {
+				baderr = err
+			}
+		} else {
+			foundkeys[key] = value
+		}
+	}
+	response := Response{}
+	if len(notFoundKeys) > 0 {
+		response.NotFound = notFoundKeys
+	}
+
+	if len(foundkeys) > 0 {
+		response.FoundKeys = foundkeys
+		w.WriteHeader(http.StatusOK)
+		response.Status = "success"
+	} else {
+		response.Status = "failed"
+		w.WriteHeader(http.StatusNotFound)
+	}
+	if baderr != nil {
+		response.Status = "failed"
+		w.WriteHeader(http.StatusInternalServerError)
+		response.Message = baderr.Error()
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
 }
 
 func getHttpListeners(httplisteners string) (*HttpListenerConfig, error) {
@@ -150,7 +293,10 @@ func main() {
 	time.Sleep(2 * time.Second)
 	raftin.Leader()
 	addkv := newAdKVHandler(raftin, logger, http_listeners)
-	http.HandleFunc("/documents", addkv.handlePost)
+	http.HandleFunc("/keyvals", addkv.handlePost)
+	http.HandleFunc("/delete", addkv.deleteKeys)
+	http.HandleFunc("/testpersist", addkv.testPersist)
+	http.HandleFunc("/getkeys", addkv.getKeys)
 	logger.Info("Server started", "raft-address", transport, "http-listener", http_listeners[*serverid])
 	if err := http.ListenAndServe(http_listeners[*serverid], nil); err != nil {
 		logger.Error("Error listening", "Error", err)

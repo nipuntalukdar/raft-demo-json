@@ -26,6 +26,7 @@ type RaftInterface struct {
 	logstore      *JsonLogStore
 	configuration *raft.Configuration
 	snapshotstore *raft.FileSnapshotStore
+	fsm           *Fsm
 	config        *raft.Config
 	logger        hclog.Logger
 }
@@ -51,8 +52,9 @@ func NewRaftInterface(configfile, logstorefile, stablestorefile, snapshotstoredi
 	}
 
 	conf := raft.DefaultConfig()
-	conf.SnapshotThreshold = 400
-	conf.SnapshotInterval = time.Second * 60
+	conf.TrailingLogs = 10
+	conf.SnapshotThreshold = 100
+	conf.SnapshotInterval = time.Second * 15
 	conf.Logger = logger
 	conf.LocalID = raft.ServerID(serverid)
 	tcptransport, err := raft.NewTCPTransport(transport, nil, 10, 10*time.Second, writer)
@@ -64,7 +66,7 @@ func NewRaftInterface(configfile, logstorefile, stablestorefile, snapshotstoredi
 	if err != nil && err != raft.ErrCantBootstrap {
 		panic(err)
 	}
-	fsm, err := NewFsm()
+	fsm, err := NewFsm(logger)
 	if err != nil {
 		return nil, err
 	}
@@ -75,6 +77,7 @@ func NewRaftInterface(configfile, logstorefile, stablestorefile, snapshotstoredi
 	raftin.config = conf
 	raftin.stablestore = stablestore
 	raftin.snapshotstore = snapshotstore
+	raftin.fsm = fsm
 	raftin.myid = string(conf.LocalID)
 	raftin.myaddr = transport
 	raftin.mytransport = tcptransport
@@ -106,5 +109,34 @@ func (raftin *RaftInterface) AddKV(key string, value string) error {
 	if err == raft.ErrNotLeader {
 		err = LeaderDifferent
 	}
+	// No need to wait for fsm response
 	return err
+}
+
+func (raftin *RaftInterface) Delete(key string) error {
+	cmd := fmt.Sprintf("D:%s", key)
+	future := raftin.raftinterface.Apply([]byte(cmd), 30*time.Second)
+	err := future.Error()
+	if err != nil {
+		if err == raft.ErrNotLeader {
+			err = LeaderDifferent
+		}
+		return err
+	}
+
+	var fsmResponse any
+	fsmResponse = future.Response()
+	if fsmResponse != nil {
+		err = fsmResponse.(error)
+	}
+	return err
+}
+
+func (raftin *RaftInterface) Persist() error {
+	future := raftin.raftinterface.Snapshot()
+	return future.Error()
+}
+
+func (raftin *RaftInterface) Get(key string) (string, error) {
+	return raftin.fsm.Get(key)
 }
