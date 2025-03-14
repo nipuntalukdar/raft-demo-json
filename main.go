@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"time"
@@ -22,18 +23,29 @@ type RequestData struct {
 	Data []Document `json:"data"`
 }
 
+type HttpListerner struct {
+	ID                  string `json:"ID"`
+	HttpListenerAddress string `json:"HttpListenerAddress"`
+}
+
+type HttpListenerConfig struct {
+	HttpListeners []HttpListerner
+}
+
 type Response struct {
 	Status  string `json:"status"`
 	Message string `json:"message,omitempty"`
 }
 
 type kvStore struct {
-	rinf *jsonstore.RaftInterface
-	logger hclog.Logger
+	rinf          *jsonstore.RaftInterface
+	logger        hclog.Logger
+	httplisteners map[string]string
 }
 
-func newAdKVHandler(rinf *jsonstore.RaftInterface, logger hclog.Logger) *kvStore {
-	return &kvStore{rinf: rinf, logger: logger}
+func newAdKVHandler(rinf *jsonstore.RaftInterface, logger hclog.Logger,
+	httplisteners map[string]string) *kvStore {
+	return &kvStore{rinf: rinf, logger: logger, httplisteners: httplisteners}
 }
 
 func (kv *kvStore) handlePost(w http.ResponseWriter, r *http.Request) {
@@ -50,34 +62,75 @@ func (kv *kvStore) handlePost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fmt.Println("Received documents:")
+	kv.logger.Info("Received documents:")
 	for _, doc := range requestData.Data {
 		kv.logger.Debug("Add Data", doc.Key, doc.Value)
 		err := kv.rinf.AddKV(doc.Key, doc.Value)
 		if err != nil {
-			http.Error(w, "Internal Error", http.StatusInternalServerError)
-			kv.logger.Error("KeyAadd", "Error", err)
+			if err != jsonstore.LeaderDifferent {
+				http.Error(w, "Internal Error", http.StatusInternalServerError)
+				kv.logger.Error("KeyAadd", "Error", err)
+				return
+			} else {
+				leaderserver, leaderid := kv.rinf.LeaderWithID()
+				kv.logger.Info("Different leader", "leader", leaderserver)
+				if leaderserver != "" {
+					leaderUrl := fmt.Sprintf("http://%s/documents", kv.httplisteners[leaderid])
+					w.Header().Set("Location", leaderUrl)
+					w.WriteHeader(http.StatusPermanentRedirect)
+
+				} else {
+					http.Error(w, "Internal Error", http.StatusInternalServerError)
+				}
+				return
+			}
 		}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(Response{Status: "success"})
 }
 
+func getHttpListeners(httplisteners string) (*HttpListenerConfig, error) {
+
+	file, err := os.OpenFile(httplisteners, os.O_RDONLY, 0600)
+	if err != nil {
+		return nil, err
+	}
+	data, err := io.ReadAll(file)
+
+	var httpconfig HttpListenerConfig
+	err = json.Unmarshal(data, &httpconfig.HttpListeners)
+	if err != nil {
+		return nil, err
+	}
+	return &httpconfig, err
+}
+
 func main() {
-	// Declare flags
+	fmt.Println("Make sure that IDs for the http listener config and raft config match ")
 	configFile := flag.String("config", "sampleconfig/config.json", "Path to configuration file")
+	httpListentconfigFile := flag.String("httplistenerconfig", "sampleconfig/http_config.json",
+		"Path to http listener config file")
 	logstoreFile := flag.String("logstore", "log/logstore.json", "Path to logstore file")
 	stablestoreFile := flag.String("stablestore", "log/stablestore.json", "Path to stablestore file")
 	transport := flag.String("transport", "127.0.0.1:7000", "Address to listen on")
 	snapshotDrr := flag.String("snapshotdir", "/tmp/snapshot", "Directory for snapshots")
 	serverid := flag.String("serverid", "", "Server Id for this server")
 	logfileconfig := flag.String("logfileconfig", "sampleconfig/logfile_config.json", "logfileconfig")
-	httpserveraddr := flag.String("httpserveraddr", ":8000", "Http server address")
 
 	flag.Parse()
 	if *serverid == "" {
 		fmt.Println("Server id must be passed ")
 		os.Exit(1)
+	}
+
+	httpconfig, err := getHttpListeners(*httpListentconfigFile)
+	if err != nil {
+		panic(err)
+	}
+	http_listeners := make(map[string]string)
+	for _, listener := range httpconfig.HttpListeners {
+		http_listeners[listener.ID] = listener.HttpListenerAddress
 	}
 
 	rollingwr, err := rollingwriter.NewWriterFromConfigFile(*logfileconfig)
@@ -96,10 +149,10 @@ func main() {
 	}
 	time.Sleep(2 * time.Second)
 	raftin.Leader()
-	addkv := newAdKVHandler(raftin, logger)
+	addkv := newAdKVHandler(raftin, logger, http_listeners)
 	http.HandleFunc("/documents", addkv.handlePost)
-	fmt.Println("Server listening on :8080")
-	if err := http.ListenAndServe(*httpserveraddr, nil); err != nil {
+	logger.Info("Server started", "raft-address", transport, "http-listener", http_listeners[*serverid])
+	if err := http.ListenAndServe(http_listeners[*serverid], nil); err != nil {
 		logger.Error("Error listening", "Error", err)
 	}
 

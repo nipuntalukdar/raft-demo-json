@@ -1,0 +1,14 @@
+[
+  {
+    "ID": "id1",
+    "HttpListenerAddress": "127.0.0.1:8000"
+  },
+  {
+    "ID": "id2",
+    "HttpListenerAddress": "127.0.0.1:8001"
+  },
+  {
+    "ID": "id3",
+    "HttpListenerAddress": "127.0.0.1:8002"
+  }
+]

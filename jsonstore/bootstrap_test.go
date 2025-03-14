@@ -5,7 +5,7 @@ import (
 )
 
 func TestBootstrap(t *testing.T) {
-	configuration, err := Bootstrap("../sampleconfig/config.json")
+	configuration, err := BootstrapConfig("../sampleconfig/config.json")
 	if err != nil {
 		t.Fatal(err)
 	}

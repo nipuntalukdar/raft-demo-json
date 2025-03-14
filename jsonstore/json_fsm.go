@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -11,7 +12,8 @@ import (
 )
 
 var (
-	ErrKeyNotFound = errors.New("not found")
+	ErrKeyNotFound  = errors.New("not found")
+	ErrIncorrectLog = errors.New("Incorrect log")
 )
 
 type Fsm struct {
@@ -28,18 +30,28 @@ func NewFsm() (fsm *Fsm, err error) {
 
 func (fsm *Fsm) Apply(log *raft.Log) interface{} {
 	ds := string(log.Data)
-	kvs := strings.Split(ds, ":")
-	if len(kvs) < 2 || len(kvs) > 3 {
-		return errors.New("Wrong log")
+	first, second, found := strings.Cut(ds, ":")
+	if !found || second == "" {
+		return ErrIncorrectLog
 	}
-	if kvs[0] == "A" && len(kvs) == 3 {
-		// Add the key
-		fsm.add(kvs[1], kvs[2])
-	} else if kvs[0] == "D" && len(kvs) == 2 {
-		// Delete the key
-		fsm.delete(kvs[1])
+	if first == "A" {
+		kvs := strings.SplitN(second, ":", 3)
+		if len(kvs) != 3 {
+			return ErrIncorrectLog
+		}
+		len1, err := strconv.Atoi(kvs[0])
+		if err != nil {
+			return ErrIncorrectLog
+		}
+		len2, err := strconv.Atoi(kvs[1])
+		if err != nil || len(kvs[2]) != (len1+len2) {
+			return ErrIncorrectLog
+		}
+		fsm.add(kvs[2][:len1], kvs[2][len1:])
+	} else if first == "D" {
+		fsm.delete(second)
 	} else {
-		return errors.New("Incorrect log")
+		return ErrIncorrectLog
 	}
 	return nil
 }

@@ -1,12 +1,17 @@
 package jsonstore
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"time"
 
 	hclog "github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/raft"
+)
+
+var (
+	LeaderDifferent = errors.New("Different Leader")
 )
 
 type RaftInterface struct {
@@ -88,8 +93,18 @@ func (raftin *RaftInterface) Leader() string {
 	return string(server)
 }
 
-func (raftin  *RaftInterface) AddKV(key string, value string) error {
-	cmd := fmt.Sprintf("A:%s:%s", key, value)	
-	future := raftin.raftinterface.Apply([]byte(cmd), 30 * time.Second)
-	return future.Error()
+func (raftin *RaftInterface) LeaderWithID() (string, string) {
+	server, id := raftin.raftinterface.LeaderWithID()
+	raftin.logger.Info("Leader", "Server", server)
+	return string(server), string(id)
+}
+
+func (raftin *RaftInterface) AddKV(key string, value string) error {
+	cmd := fmt.Sprintf("A:%d:%d:%s%s", len(key), len(value), key, value)
+	future := raftin.raftinterface.Apply([]byte(cmd), 30*time.Second)
+	err := future.Error()
+	if err == raft.ErrNotLeader {
+		err = LeaderDifferent
+	}
+	return err
 }
