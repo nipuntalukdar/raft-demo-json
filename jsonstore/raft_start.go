@@ -14,6 +14,12 @@ var (
 	LeaderDifferent = errors.New("Different Leader")
 )
 
+type Server struct {
+	Address string
+	Id      string
+	Leader  bool
+}
+
 type RaftInterface struct {
 	raftinterface *raft.Raft
 	configfile    string
@@ -139,4 +145,26 @@ func (raftin *RaftInterface) Persist() error {
 
 func (raftin *RaftInterface) Get(key string) (string, error) {
 	return raftin.fsm.Get(key)
+}
+
+func (raftin *RaftInterface) GetServers() ([]Server, error) {
+	_, leader_id := raftin.LeaderWithID()
+	configfuture := raftin.raftinterface.GetConfiguration()
+	err := configfuture.Error()
+	if err != nil {
+		raftin.logger.Error("Error", "getconfig", err.Error())
+		return nil, err
+	}
+	config := configfuture.Configuration()
+	var servers []Server
+	for _, server := range config.Servers {
+		thisServer := Server{}
+		if string(server.ID) == leader_id {
+			thisServer.Leader = true
+		}
+		thisServer.Address = string(server.Address)
+		thisServer.Id = string(server.ID)
+		servers = append(servers, thisServer)
+	}
+	return servers, nil
 }

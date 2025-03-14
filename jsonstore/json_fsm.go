@@ -8,8 +8,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/hashicorp/raft"
 	hclog "github.com/hashicorp/go-hclog"
+	"github.com/hashicorp/raft"
 )
 
 var (

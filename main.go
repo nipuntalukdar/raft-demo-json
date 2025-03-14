@@ -36,12 +36,17 @@ type RequestKeys struct {
 	Keys []string `json:"keys"`
 }
 
+type Servers struct {
+	Servers []jsonstore.Server `json:"servers"`
+}
+
 type Response struct {
-	Status  string `json:"status"`
-	Message string `json:"message,omitempty"`
-	DeleteKeys []string `json:"deleted,omitempty"`
-	NotFound  []string `json:"notfound,omitempty"`
-	FoundKeys  map[string]string `json:"found,omitempty"`
+	Status     string             `json:"status"`
+	Message    string             `json:"message,omitempty"`
+	DeleteKeys []string           `json:"deleted,omitempty"`
+	NotFound   []string           `json:"notfound,omitempty"`
+	FoundKeys  map[string]string  `json:"found,omitempty"`
+	Servers    []jsonstore.Server `json:"servers,omitempty"`
 }
 
 type kvStore struct {
@@ -166,6 +171,25 @@ func (kv *kvStore) handlePost(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(Response{Status: "success"})
+}
+
+func (kv *kvStore) getServers(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	kv.logger.Info("Getting servers")
+
+	servers, err := kv.rinf.GetServers()
+
+	w.Header().Set("Content-Type", "application/json")
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(Response{Status: "failure"})
+	} else {
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(Response{Status: "success", Servers: servers})
+	}
 }
 
 func (kv *kvStore) testPersist(w http.ResponseWriter, r *http.Request) {
@@ -297,6 +321,8 @@ func main() {
 	http.HandleFunc("/delete", addkv.deleteKeys)
 	http.HandleFunc("/testpersist", addkv.testPersist)
 	http.HandleFunc("/getkeys", addkv.getKeys)
+	http.HandleFunc("/servers", addkv.getServers)
+
 	logger.Info("Server started", "raft-address", transport, "http-listener", http_listeners[*serverid])
 	if err := http.ListenAndServe(http_listeners[*serverid], nil); err != nil {
 		logger.Error("Error listening", "Error", err)
