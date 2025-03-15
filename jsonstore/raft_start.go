@@ -15,28 +15,59 @@ var (
 )
 
 type Server struct {
+	//Address of the raft node
 	Address string
+
+	//Id of the node 
 	Id      string
+
+	//Is the node the leader
 	Leader  bool
 }
 
+// Application interface to play with RAFT
 type RaftInterface struct {
+	//Interface to underlying RAFT engine
 	raftinterface *raft.Raft
+
+	// Configuration for the RAFT Nodes
 	configfile    string
+
+	// File where the RAFT logs are store
 	logstorefile  string
+
+	//Directory where the snapshots will be dumped 
 	snapshotdir   string
+
+	//Id assigned to Myself, the RAFT node
 	myid          string
+
+	//My address to be used for RAFT traffic
 	myaddr        string
+
+	// RAFT network transport
 	mytransport   *raft.NetworkTransport
+
+	//JSON file based stable storagge for RAFT configs
 	stablestore   *JsonStableStore
+
+	//JSON file based storage provider for RAFT log entries
 	logstore      *JsonLogStore
-	configuration *raft.Configuration
+
+	// JSON file based snapshotstore provider
 	snapshotstore *raft.FileSnapshotStore
+
+	// State machine for the Key and Values
 	fsm           *Fsm
+
+	// RAFT configurations
 	config        *raft.Config
+
+	//Logger for application logs
 	logger        hclog.Logger
 }
 
+//  Creates a new RaftInterface object
 func NewRaftInterface(configfile, logstorefile, stablestorefile, snapshotstoredir,
 	transport string, serverid string, logger hclog.Logger, writer io.Writer) (*RaftInterface, error) {
 	configuration, err := BootstrapConfig(configfile)
@@ -58,9 +89,9 @@ func NewRaftInterface(configfile, logstorefile, stablestorefile, snapshotstoredi
 	}
 
 	conf := raft.DefaultConfig()
-	conf.TrailingLogs = 10
+	conf.TrailingLogs = 50
 	conf.SnapshotThreshold = 100
-	conf.SnapshotInterval = time.Second * 15
+	conf.SnapshotInterval = time.Second * 60
 	conf.Logger = logger
 	conf.LocalID = raft.ServerID(serverid)
 	tcptransport, err := raft.NewTCPTransport(transport, nil, 10, 10*time.Second, writer)
@@ -96,18 +127,22 @@ func NewRaftInterface(configfile, logstorefile, stablestorefile, snapshotstoredi
 
 }
 
+// Attempts the get the current leader node
 func (raftin *RaftInterface) Leader() string {
 	server := raftin.raftinterface.Leader()
 	raftin.logger.Info("Leader", "Server", server)
 	return string(server)
 }
 
+// Attempts to get the the current leader along with its id
 func (raftin *RaftInterface) LeaderWithID() (string, string) {
 	server, id := raftin.raftinterface.LeaderWithID()
 	raftin.logger.Info("Leader", "Server", server)
 	return string(server), string(id)
 }
 
+// Adds a Key value pair. It will return an error if the node
+// serving the request is not the current leader.
 func (raftin *RaftInterface) AddKV(key string, value string) error {
 	cmd := fmt.Sprintf("A:%d:%d:%s%s", len(key), len(value), key, value)
 	future := raftin.raftinterface.Apply([]byte(cmd), 30*time.Second)
@@ -119,6 +154,8 @@ func (raftin *RaftInterface) AddKV(key string, value string) error {
 	return err
 }
 
+// Delete deletes a key. It will return an error if the node
+// serving the request is not the current leader.
 func (raftin *RaftInterface) Delete(key string) error {
 	cmd := fmt.Sprintf("D:%s", key)
 	future := raftin.raftinterface.Apply([]byte(cmd), 30*time.Second)
@@ -138,15 +175,21 @@ func (raftin *RaftInterface) Delete(key string) error {
 	return err
 }
 
+// Persist triggers a snapshotting, on all nodes
 func (raftin *RaftInterface) Persist() error {
 	future := raftin.raftinterface.Snapshot()
 	return future.Error()
 }
 
+
+// Get gets the value for a key from underlying fsm. 
+// It can be serverd by any of the node, leader or not leader
 func (raftin *RaftInterface) Get(key string) (string, error) {
 	return raftin.fsm.Get(key)
 }
 
+// Get the current list of servers along with with their ids,
+// And whether a server is leader or not
 func (raftin *RaftInterface) GetServers() ([]Server, error) {
 	_, leader_id := raftin.LeaderWithID()
 	configfuture := raftin.raftinterface.GetConfiguration()
